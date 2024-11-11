@@ -1,0 +1,11 @@
+from enum import Enum
+from typing import List
+from pydantic import BaseModel
+
+
+class FundList(str, Enum):
+    FPV_BTG_PACTUAL_RECAUDADORA = "FPV_BTG_PACTUAL_RECAUDADORA"
+    FPV_BTG_PACTUAL_ECOPETROL = "FPV_BTG_PACTUAL_ECOPETROL"
+    DEUDAPRIVADA = "DEUDAPRIVADA"
+    FDO_ACCIONES = "FDO_ACCIONES"
+    FPV_BTG_PACTUAL_DINAMICA = "FPV_BTG_PACTUAL_DINAMICA"
