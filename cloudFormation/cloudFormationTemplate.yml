@@ -1,0 +1,233 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  ApiGatewayName:
+    Type: String
+    Description: Pragma API Gateway
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: us-west-1a
+      MapPublicIpOnLaunch: false
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: us-west-1a
+      MapPublicIpOnLaunch: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: PragmaIG
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  ApiGatewaySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound traffic from the internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from API Gateway to ECS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          SourceSecurityGroupId: !Ref ApiGatewaySecurityGroup
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          SourceSecurityGroupId: !Ref ApiGatewaySecurityGroup
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: pragma-repository
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: pragma-ecs-cluster
+
+  VPCLink:
+    Type: AWS::ApiGateway::VpcLink
+    Properties:
+      Name: !Ref ApiGatewayName
+      TargetArns:
+        - arn:aws:elasticloadbalancing:us-west-1:123456789012:loadbalancer/net/my-load-balancer/50dc6c495c0c9188
+      Description: VPC Link for Pragma application
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref ApiGatewayName
+      Description: API Gateway for Pragma application using VPC Link
+      FailOnWarnings: true
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: app
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: HTTP_PROXY
+        Uri: !Sub http://${PrivateSubnet}.amazonaws.com/
+        ConnectionType: VPC_LINK
+        ConnectionId: !Ref VPCLink
+
+  ApiGatewayGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: GET
+        Type: HTTP_PROXY
+        Uri: !Sub http://${PrivateSubnet}.amazonaws.com/
+        ConnectionType: VPC_LINK
+        ConnectionId: !Ref VPCLink
+
+  ApiGatewayPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayResource
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: PUT
+        Type: HTTP_PROXY
+        Uri: !Sub http://${PrivateSubnet}.amazonaws.com/
+        ConnectionType: VPC_LINK
+        ConnectionId: !Ref VPCLink
+
+  ApiGatewayDeleteMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiGatewayResource
+      HttpMethod: DELETE
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: DELETE
+        Type: HTTP_PROXY
+        Uri: !Sub http://${PrivateSubnet}.amazonaws.com/
+        ConnectionType: VPC_LINK
+        ConnectionId: !Ref VPCLink
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: pragma-task-definition
+      ContainerDefinitions:
+        - Name: pragma-container
+          Image: !Sub ${ECRRepository.repositoryUri}:latest
+          Memory: 512
+          Cpu: 256
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              HostPort: 80
+      RequiresCompatibilities:
+        - EC2
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 1
+      LaunchType: EC2
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref PrivateSubnet
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          AssignPublicIp: DISABLED
+
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: PragmaTable
+      AttributeDefinitions:
+        - AttributeName: account_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: account_id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  DynamoDBVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
+      VpcId: !Ref VPC
+      RouteTableIds:
+        - !Ref PrivateSubnet
+      VpcEndpointType: Interface
+
+Outputs:
+  ApiGatewayUrl:
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com
+    Description: API Gateway URL
+  ECRRepositoryUri:
+    Value: !GetAtt ECRRepository.RepositoryUri
+    Description: ECR Repository URI
+  ECSClusterName:
+    Value: !Ref ECSCluster
+    Description: ECS Cluster Name
+  DynamoDBTableName:
+    Value: !Ref DynamoDBTable
+    Description: DynamoDB Table Name
+  DynamoDBVpcEndpointId:
+    Value: !Ref DynamoDBVpcEndpoint
+    Description: DynamoDB VPC Endpoint ID
